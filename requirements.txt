@@ -80,3 +80,10 @@ wcwidth==0.2.13
 Werkzeug==2.2.3
 yacs==0.1.6
 zipp==3.15.0
+cupy==11.6.0
+torch==1.13.1
+torchvision==0.14.1
+nvidia-cublas-cu11
+nvidia-cuda-nvrtc-cu11
+nvidia-cuda-runtime-cu11
+nvidia-cudnn-cu11
