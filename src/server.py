@@ -1,190 +1,306 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
+import asyncio
+import multiprocessing
+import os
+import shutil
+import uuid
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
+from typing import Union
 
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-# --------------------------------------------------------
-# References:
-# ginr-ipc: https://github.com/kakaobrain/ginr-ipc
-# --------------------------------------------------------
-
-import ctypes
-
-libgcc_s = ctypes.CDLL("libgcc_s.so.1")
-
-import argparse
-import math
-
+import cv2
+import numpy as np
+import requests
 import torch
-import torch.distributed as dist
-
-import utils.dist as dist_utils
+import uvicorn
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from tqdm import tqdm
 
 from models import create_model
-from trainers import create_trainer
-from datasets import create_dataset
-from optimizer import create_optimizer, create_scheduler
-from utils.utils import set_seed
-from utils.profiler import Profiler
-from utils.setup import setup
+from utils.flow_viz import flow_to_image
+from utils.setup import single_setup
+from utils.utils import InputPadder, set_seed
+from video_Nx import images_to_video, load_image
 
 
-def default_parser():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-m",
-        "--model-config",
-        type=str,
-        default="./configs/image/imagenette178_low_rank_modulated_transinr.yaml",
-    )
-    parser.add_argument("-r", "--result-path", type=str, default="./results.tmp")
-    parser.add_argument("-l", "--load-path", type=str, default="")
-    parser.add_argument("-p", "--postfix", type=str, default="")
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--eval", action="store_true")
-    parser.add_argument("--resume", action="store_true")
-    return parser
+@dataclass
+class VFIArgs:
+    model_config: str = "configs/gimmvfi/gimmvfi_r_arb.yaml"
+    load_path: str = "pretrained_ckpt/gimmvfi_r_arb_lpips.pt"
+    source_path: str = None
+    output_path: str = None
+    N: int = 9
+    ds_factor: float = 1.0
+    result_path: str = None
+    postfix: str = None
+    seed: int = 0
+    eval: bool = True
 
 
-def add_dist_arguments(parser):
-    parser.add_argument(
-        "--world_size",
-        default=-1,
-        type=int,
-        help="number of nodes for distributed training",
-    )
-    parser.add_argument(
-        "--local_rank", default=-1, type=int, help="local rank for distributed training"
-    )
-    parser.add_argument(
-        "--node_rank", default=-1, type=int, help="node rank for distributed training"
-    )
-    parser.add_argument("--nnodes", default=-1, type=int)
-    parser.add_argument("--nproc_per_node", default=-1, type=int)
-    parser.add_argument(
-        "--dist-backend", default="nccl", type=str, help="distributed backend"
-    )
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        default=86400,
-        help="time limit (s) to wait for other nodes in DDP",
-    )
-    return parser
+class VFIRequest(BaseModel):
+    images: Union[list[str], str] = None
+    video: str = None
+    output_type: str = "path"
 
 
-def parse_args():
-    parser = default_parser()
-    parser = add_dist_arguments(parser)
-    args, extra_args = parser.parse_known_args()
-    return args, extra_args
+_model = None
 
 
-if __name__ == "__main__":
-    args, extra_args = parse_args()
-    set_seed(args.seed)
-    config, logger, writer = setup(args, extra_args)
-    distenv = config.runtime.distenv
-    profiler = Profiler(logger)
+def _load_model():
+    global _model
 
-    torch.backends.cudnn.benchmark = True
-    device = torch.device("cuda", distenv.local_rank)
-    torch.cuda.set_device(device)
+    args = VFIArgs()
+    config = single_setup(args, extra_args=(), train=False)
+    _model, _ = create_model(config.arch)
+    _model = _model.to(torch.device("cuda"))
 
-    dataset_trn, dataset_val = create_dataset(config, is_eval=args.eval, logger=logger)
-
-    model, model_ema = create_model(config.arch, ema=config.arch.ema is not None)
-    model = model.to(device)
-    model_ema = model_ema.to(device) if model_ema is not None else None
-
-    if distenv.master:
-        print(model)
-        profiler.get_model_size(model)
-        profiler.get_model_size(model, opt="trainable-only")
-
-    # Checkpoint loading
     if not args.load_path == "":
-        ckpt = torch.load(args.load_path, map_location="cpu")
-        model.load_state_dict(ckpt["state_dict"], strict=False)
-        if model_ema is not None:
-            if "state_dict_ema" in ckpt.keys():
-                ckpt["state_dict_ema"] = {
-                    "module." + k: v for k, v in ckpt["state_dict_ema"].items()
-                }
-                model_ema.load_state_dict(ckpt["state_dict_ema"])
-                model_ema.load_state_dict(ckpt["state_dict_ema"])
-            else:
-                model_ema.load_state_dict(ckpt["state_dict"], strict=False)
+        if "ours" in args.load_path:
+            ckpt = torch.load(args.load_path, map_location="cpu")
 
-        if distenv.master:
-            logger.info(f"{args.load_path} model is loaded")
+            def convert(param):
+                return {
+                    k.replace("module.feature_bone", "frame_encoder"): v
+                    for k, v in param.items()
+                    if "feature_bone" in k
+                }
+
+            ckpt = convert(ckpt)
+            _model.load_state_dict(ckpt, strict=False)
+        else:
+            ckpt = torch.load(args.load_path, map_location="cpu")
+            _model.load_state_dict(ckpt["state_dict"], strict=True)
     else:
         ckpt = None
         if args.eval or args.resume:
-            raise ValueError(
-                "--load-path must be specified in evaluation or resume mode"
-            )
+            raise ValueError("load_path must be specified in evaluation or resume mode")
 
-    # Optimizer definition
-    if args.eval:
-        optimizer, scheduler, epoch_st = None, None, None
-    else:
-        steps_per_epoch = math.ceil(
-            len(dataset_trn) / (config.experiment.batch_size * distenv.world_size)
-        )
-        steps_per_epoch = steps_per_epoch // config.optimizer.grad_accm_steps
 
-        optimizer = create_optimizer(model, config)
-        scheduler = create_scheduler(
-            optimizer,
-            config.optimizer.warmup,
-            steps_per_epoch,
-            config.experiment.epochs,
-            distenv,
-        )
+def _download_files(urls: Union[list[str], str], download_path: str) -> None:
+    """
+    Downloads files from given URLs and saves them to the specified directory.
 
-        if distenv.master:
-            print(optimizer)
+    Args:
+        urls (Union[list[str], str]): A list of file URLs or a single file URL to download.
+        download_path (str): The directory path where the downloaded files will be stored.
+    """
+    os.makedirs(download_path, exist_ok=True)
 
-        if args.resume:
-            optimizer.load_state_dict(ckpt["optimizer"])
-            scheduler.load_state_dict(ckpt["scheduler"])
-            epoch_st = ckpt["epoch"]
+    if isinstance(urls, str):
+        urls = [urls]
 
-            if distenv.master:
-                logger.info(f"Optimizer, scheduler, and epoch is resumed")
-                logger.info(f"resuming from {epoch_st}..")
+    for idx, url in enumerate(urls):
+        try:
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            file_path = os.path.join(download_path, url.split("/")[-1])
+            with open(file_path, "wb") as f:
+                for chunk in response.iter_content(1024):
+                    f.write(chunk)
+        except requests.exceptions.RequestException as e:
+            print(f"Failed to download {url}: {e}")
+
+
+def _copy_files(src: str, dest: str) -> None:
+    """
+    Copies files from a directory or a single specific file to the destination directory.
+
+    Args:
+        src (str): Directory path of files or a single file path to copy.
+        dest (str): Directory path where files will be copied.
+    """
+    os.makedirs(dest, exist_ok=True)
+
+    try:
+        if os.path.isfile(src):
+            shutil.copy(src, dest)
+        elif os.path.isdir(src):
+            for item in os.listdir(src):
+                item_path = os.path.join(src, item)
+                if os.path.isfile(item_path):
+                    shutil.copy(item_path, dest)
         else:
-            epoch_st = 0
+            raise ValueError(f"Source {src} is not a valid file or directory.")
+    except Exception as e:
+        print(f"Failed to copy {src}: {e}")
 
-    # Usual DDP setting
-    static_graph = False
-    model = dist_utils.dataparallel_and_sync(
-        distenv, model, static_graph=static_graph, find_unused_parameters=False
-    )
-    if model_ema is not None:
-        model_ema = dist_utils.dataparallel_and_sync(
-            distenv, model_ema, static_graph=static_graph
-        )
 
-    trainer = create_trainer(config)
-    trainer = trainer(
-        model, model_ema, dataset_trn, dataset_val, config, writer, device, distenv
-    )
+def _extract_frames_from_video(video_path: str, output_dir: str) -> None:
+    """
+    Extracts frames from a video file and saves them as .png files in the specified directory.
 
-    if distenv.master:
-        logger.info(f"Trainer created. type: {trainer.__class__}")
+    Args:
+        video_path (str): Path to the video file.
+        output_dir (str): Directory where the extracted frames will be saved.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    cap = cv2.VideoCapture(video_path)
+    frame_count = 0
 
-    if args.eval:
-        trainer.config.experiment.subsample_during_eval = False
-        trainer.eval(valid=False, verbose=True)
-        trainer.eval(valid=True, verbose=True)
-        if model_ema is not None:
-            trainer.eval(valid=True, ema=True, verbose=True)
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame_filename = os.path.join(output_dir, f"{frame_count:06d}.png")
+        cv2.imwrite(frame_filename, frame)
+        frame_count += 1
+
+    cap.release()
+    print(f"{frame_count} frames extracted")
+
+
+def _run(req: VFIRequest):
+    uid = str(uuid.uuid4()).replace("-", "")
+    src_path, dst_path = f"work/input/{uid}", f"work/output/{uid}"
+    os.makedirs(src_path, exist_ok=True)
+
+    if req.images:
+        if isinstance(req.images, str) and req.images.startswith(("/", "~")):
+            _copy_files(src=req.images, dest=src_path)
+        else:
+            _download_files(urls=req.images, download_path=src_path)
+    elif req.video:
+        if req.video.startswith(("/", "~")):
+            _copy_files(src=req.video, dest=src_path)
+        else:
+            _download_files(urls=req.video, download_path=src_path)
+
+        vfilename = req.video.split("/")[-1]
+        _extract_frames_from_video(f"{src_path}/{vfilename}", src_path)
     else:
-        trainer.run_epoch(optimizer, scheduler, epoch_st)
+        raise ValueError("Images or video must be provided")
 
-    dist.barrier()
+    args = VFIArgs(source_path=src_path, output_path=dst_path)
+    set_seed(args.seed)
+    device = torch.device("cuda")
+    
+    if not _model:
+        _load_model()
 
-    if distenv.master:
-        writer.close()
+    os.makedirs(args.output_path, exist_ok=True)
+
+    source_path = args.source_path
+    output_path = os.path.join(args.output_path, f"o-{uid}.mp4")
+    flow_output_path = os.path.join(args.output_path, f"f-{uid}.mp4")
+
+    img_list = sorted(
+        filter(lambda f: f.endswith((".png", ".jpg")), os.listdir(source_path))
+    )
+    images = []
+    ori_image = []
+    flows = []
+    start = 0
+    end = len(img_list) - 1
+
+    for j in tqdm(range(start, end)):
+        img_path0 = os.path.join(source_path, img_list[j])
+        img_path2 = os.path.join(source_path, img_list[j + 1])
+        # prepare data b,c,h,w
+        I0 = load_image(img_path0)
+        if j == start:
+            images.append(
+                (I0.squeeze().detach().cpu().numpy().transpose(1, 2, 0) * 255.0)[
+                    :, :, ::-1
+                ].astype(np.uint8)
+            )
+            ori_image.append(
+                (I0.squeeze().detach().cpu().numpy().transpose(1, 2, 0) * 255.0)[
+                    :, :, ::-1
+                ].astype(np.uint8)
+            )
+            images[-1] = cv2.hconcat([ori_image[-1], images[-1]])
+        I2 = load_image(img_path2)
+        padder = InputPadder(I0.shape, 32)
+        I0, I2 = padder.pad(I0, I2)
+        xs = torch.cat((I0.unsqueeze(2), I2.unsqueeze(2)), dim=2).to(
+            device, non_blocking=True
+        )
+        _model.eval()
+        batch_size = xs.shape[0]
+        s_shape = xs.shape[-2:]
+
+        _model.zero_grad()
+        ds_factor = args.ds_factor
+        with torch.no_grad():
+            coord_inputs = [
+                (
+                    _model.sample_coord_input(
+                        batch_size,
+                        s_shape,
+                        [1 / args.N * i],
+                        device=xs.device,
+                        upsample_ratio=ds_factor,
+                    ),
+                    None,
+                )
+                for i in range(1, args.N)
+            ]
+            timesteps = [
+                i * 1 / args.N * torch.ones(xs.shape[0]).to(xs.device).to(torch.float)
+                for i in range(1, args.N)
+            ]
+            all_outputs = _model(xs, coord_inputs, t=timesteps, ds_factor=ds_factor)
+            out_frames = [padder.unpad(im) for im in all_outputs["imgt_pred"]]
+            out_flowts = [padder.unpad(f) for f in all_outputs["flowt"]]
+        flowt_imgs = [
+            flow_to_image(
+                flowt.squeeze().detach().cpu().permute(1, 2, 0).numpy(),
+                convert_to_bgr=True,
+            )
+            for flowt in out_flowts
+        ]
+        I1_pred_img = [
+            (I1_pred[0].detach().cpu().numpy().transpose(1, 2, 0) * 255.0)[
+                :, :, ::-1
+            ].astype(np.uint8)
+            for I1_pred in out_frames
+        ]
+
+        for i in range(args.N - 1):
+            images.append(I1_pred_img[i])
+            flows.append(flowt_imgs[i])
+
+            images[-1] = cv2.hconcat([ori_image[-1], images[-1]])
+
+        images.append(
+            (
+                (padder.unpad(I2)).squeeze().detach().cpu().numpy().transpose(1, 2, 0)
+                * 255.0
+            )[:, :, ::-1].astype(np.uint8)
+        )
+        ori_image.append(
+            (
+                (padder.unpad(I2)).squeeze().detach().cpu().numpy().transpose(1, 2, 0)
+                * 255.0
+            )[:, :, ::-1].astype(np.uint8)
+        )
+        images[-1] = cv2.hconcat([ori_image[-1], images[-1]])
+
+    images_to_video(images[:-1], output_path, fps=args.N * 2)
+    images_to_video(flows, flow_output_path, fps=args.N * 2)
+    print(len(images))
+
+    return (output_path.lstrip("work/output"), flow_output_path.lstrip("work/output"))
+
+
+multiprocessing.set_start_method("spawn")
+executor = ProcessPoolExecutor(max_workers=2, initializer=_load_model)
+
+
+app = FastAPI()
+app.mount("/videos", StaticFiles(directory="work/output"), name="output")
+
+
+@app.post("/vfi")
+async def vfi(req: VFIRequest):
+    # opath, fpath = await asyncio.wrap_future(executor.submit(_run, req))
+    opath, fpath =_run(req)
+    return {
+        "opath": f"http://10.252.25.251:8185/videos/{opath}",
+        "fpath": f"http://10.252.25.251:8185/videos/{fpath}",
+    }
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8185)
