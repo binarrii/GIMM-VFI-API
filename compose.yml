@@ -1,0 +1,15 @@
+services:
+  gimm-vfi-api:
+    image: binarii/gimm-vfi-api
+    container_name: gimm-vfi-api
+    restart: always
+    shm_size: 4g
+    ports:
+      - "8185:8185"
+    volumes:
+      - /data/gimm-vfi-api:/app/work
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8185/health || exit 1"]
+    environment:
+      GVFI_PATH_PREFIX: /data/gimm-vfi-api
+      GVFI_HTTP_PREFIX: http://10.252.25.251:8185

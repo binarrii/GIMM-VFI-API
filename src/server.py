@@ -3,7 +3,7 @@ import multiprocessing
 import os
 import shutil
 import uuid
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import Union
 
@@ -24,9 +24,16 @@ from utils.setup import single_setup
 from utils.utils import InputPadder, set_seed
 from video_Nx import images_to_video, load_image
 
-
 dotenv.load_dotenv()
 _HTTP_PREFIX = os.getenv("GVFI_HTTP_PREFIX", default="").rstrip("/")
+_PATH_PREFIX = os.getenv("GVFI_PATH_PREFIX", default="").rstrip("/")
+
+_WORK_DIR = "work"
+_INPUT_DIR = os.getenv("GVFI_INPUT_DIR", f"{_WORK_DIR}/input").rstrip("/")
+_OUTPUT_DIR = os.getenv("GVFI_OUTPUT_DIR", f"{_WORK_DIR}/output").rstrip("/")
+
+os.makedirs(_INPUT_DIR, exist_ok=True)
+os.makedirs(_OUTPUT_DIR, exist_ok=True)
 
 
 @dataclass
@@ -47,6 +54,7 @@ class VFIRequest(BaseModel):
     uid: str = None
     images: Union[list[str], str] = None
     video: str = None
+    n: int = 8
     output_type: str = "path"
     notify_url: str = None
 
@@ -145,6 +153,7 @@ def _extract_frames_from_video(video_path: str, output_dir: str) -> None:
     """
     os.makedirs(output_dir, exist_ok=True)
     cap = cv2.VideoCapture(video_path)
+    frame_rate = cap.get(cv2.CAP_PROP_FPS)
     frame_count = 0
 
     while cap.isOpened():
@@ -156,14 +165,30 @@ def _extract_frames_from_video(video_path: str, output_dir: str) -> None:
         frame_count += 1
 
     cap.release()
-    print(f"{frame_count} frames extracted")
+    print(f"{frame_count} frames extracted, frame rate: {frame_rate}")
+
+
+def _get_video_frame_rate(video_path: str) -> float:
+    """
+    Reads the frame rate of a video file.
+
+    Args:
+        video_path (str): Path to the video file.
+
+    Returns:
+        float: The frame rate of the video.
+    """
+    cap = cv2.VideoCapture(video_path)
+    frame_rate = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    return frame_rate
 
 
 def _run(req: VFIRequest):
     uid = req.uid
     print(f"Executing task {uid} on process {os.getpid()}")
 
-    src_path, dst_path = f"work/input/{uid}", f"work/output/{uid}"
+    src_path, dst_path = f"{_INPUT_DIR}/{uid}", f"{_OUTPUT_DIR}/{uid}"
     os.makedirs(src_path, exist_ok=True)
 
     if req.images:
@@ -182,7 +207,7 @@ def _run(req: VFIRequest):
     else:
         raise ValueError("Images or video must be provided")
 
-    args = VFIArgs(source_path=src_path, output_path=dst_path)
+    args = VFIArgs(source_path=src_path, output_path=dst_path, N=req.n)
     set_seed(args.seed)
     device = torch.device("cuda")
 
@@ -284,11 +309,16 @@ def _run(req: VFIRequest):
         )
         # images[-1] = cv2.hconcat([ori_image[-1], images[-1]])
 
-    images_to_video(images[:-1], output_path, fps=args.N * 2)
-    images_to_video(flows, flow_output_path, fps=args.N * 2)
+    _fps = args.N * 2
+    if req.video:
+        vfsp = _get_video_frame_rate(f"{src_path}/{vfilename}")
+        _fps = min(vfsp * args.N, 60)
+
+    images_to_video(images[:-1], output_path, fps=_fps)
+    images_to_video(flows, flow_output_path, fps=_fps)
     print(len(images))
 
-    return (output_path.lstrip("work/output"), flow_output_path.lstrip("work/output"))
+    return (output_path, flow_output_path)
 
 
 multiprocessing.set_start_method("spawn", force=True)
@@ -301,7 +331,12 @@ def lifespan(_: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-app.mount("/videos", StaticFiles(directory="work/output"), name="output")
+app.mount("/videos", StaticFiles(directory=_OUTPUT_DIR), name="output")
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 
 @app.post("/vfi")
@@ -309,14 +344,18 @@ async def vfi(req: VFIRequest):
     req.uid = str(uuid.uuid4()).replace("-", "")
     future = executor.submit(_run, req)
 
-    def send_notify(f):
+    def send_notify(f: Future[tuple[str, str]]):
         opath, fpath = f.result()
-        data = {
-            "task_id": req.uid,
-            "opath": f"{_HTTP_PREFIX}/videos/{opath}",
-            "fpath": f"{_HTTP_PREFIX}/videos/{fpath}",
-        }
+        if req.output_type == "url":
+            ovideo = f"{_HTTP_PREFIX}/videos/{opath.lstrip(_OUTPUT_DIR)}"
+            fvideo = f"{_HTTP_PREFIX}/videos/{fpath.lstrip(_OUTPUT_DIR)}"
+        else:
+            ovideo = opath if opath.startswith("/") else f"{_PATH_PREFIX}{opath.lstrip(_WORK_DIR)}"
+            fvideo = fpath if fpath.startswith("/") else f"{_PATH_PREFIX}{fpath.lstrip(_WORK_DIR)}"
+
+        data = {"task_id": req.uid, "ovideo": ovideo, "fvideo": fvideo}
         print(json.dumps(data))
+
         if req.notify_url:
             requests.post(req.notify_url, json=data)
 

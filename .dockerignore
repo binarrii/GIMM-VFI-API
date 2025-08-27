@@ -1,0 +1,10 @@
+.*
+!.env
+
+uv.lock
+
+Dockerfile
+compose.yml
+
+__pycache__/
+output_images/*
