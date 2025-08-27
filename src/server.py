@@ -1,4 +1,5 @@
-import asyncio
+import dotenv
+import json
 import multiprocessing
 import os
 import shutil
@@ -24,13 +25,17 @@ from utils.utils import InputPadder, set_seed
 from video_Nx import images_to_video, load_image
 
 
+dotenv.load_dotenv()
+_HTTP_PREFIX = os.getenv("GVFI_HTTP_PREFIX", default="").rstrip("/")
+
+
 @dataclass
 class VFIArgs:
     model_config: str = "configs/gimmvfi/gimmvfi_r_arb.yaml"
     load_path: str = "pretrained_ckpt/gimmvfi_r_arb_lpips.pt"
     source_path: str = None
     output_path: str = None
-    N: int = 9
+    N: int = 8
     ds_factor: float = 1.0
     result_path: str = None
     postfix: str = None
@@ -39,9 +44,11 @@ class VFIArgs:
 
 
 class VFIRequest(BaseModel):
+    uid: str = None
     images: Union[list[str], str] = None
     video: str = None
     output_type: str = "path"
+    notify_url: str = None
 
 
 _model = None
@@ -110,6 +117,8 @@ def _copy_files(src: str, dest: str) -> None:
         src (str): Directory path of files or a single file path to copy.
         dest (str): Directory path where files will be copied.
     """
+    src = os.path.expanduser(src)
+    dest = os.path.expanduser(dest)
     os.makedirs(dest, exist_ok=True)
 
     try:
@@ -151,7 +160,9 @@ def _extract_frames_from_video(video_path: str, output_dir: str) -> None:
 
 
 def _run(req: VFIRequest):
-    uid = str(uuid.uuid4()).replace("-", "")
+    uid = req.uid
+    print(f"Executing task {uid} on process {os.getpid()}")
+
     src_path, dst_path = f"work/input/{uid}", f"work/output/{uid}"
     os.makedirs(src_path, exist_ok=True)
 
@@ -174,9 +185,6 @@ def _run(req: VFIRequest):
     args = VFIArgs(source_path=src_path, output_path=dst_path)
     set_seed(args.seed)
     device = torch.device("cuda")
-    
-    if not _model:
-        _load_model()
 
     os.makedirs(args.output_path, exist_ok=True)
 
@@ -209,7 +217,7 @@ def _run(req: VFIRequest):
                     :, :, ::-1
                 ].astype(np.uint8)
             )
-            images[-1] = cv2.hconcat([ori_image[-1], images[-1]])
+            # images[-1] = cv2.hconcat([ori_image[-1], images[-1]])
         I2 = load_image(img_path2)
         padder = InputPadder(I0.shape, 32)
         I0, I2 = padder.pad(I0, I2)
@@ -260,8 +268,7 @@ def _run(req: VFIRequest):
         for i in range(args.N - 1):
             images.append(I1_pred_img[i])
             flows.append(flowt_imgs[i])
-
-            images[-1] = cv2.hconcat([ori_image[-1], images[-1]])
+            # images[-1] = cv2.hconcat([ori_image[-1], images[-1]])
 
         images.append(
             (
@@ -275,7 +282,7 @@ def _run(req: VFIRequest):
                 * 255.0
             )[:, :, ::-1].astype(np.uint8)
         )
-        images[-1] = cv2.hconcat([ori_image[-1], images[-1]])
+        # images[-1] = cv2.hconcat([ori_image[-1], images[-1]])
 
     images_to_video(images[:-1], output_path, fps=args.N * 2)
     images_to_video(flows, flow_output_path, fps=args.N * 2)
@@ -284,22 +291,38 @@ def _run(req: VFIRequest):
     return (output_path.lstrip("work/output"), flow_output_path.lstrip("work/output"))
 
 
-multiprocessing.set_start_method("spawn")
+multiprocessing.set_start_method("spawn", force=True)
 executor = ProcessPoolExecutor(max_workers=2, initializer=_load_model)
 
 
-app = FastAPI()
+def lifespan(_: FastAPI):
+    yield
+    executor.shutdown(wait=False, cancel_futures=True)
+
+
+app = FastAPI(lifespan=lifespan)
 app.mount("/videos", StaticFiles(directory="work/output"), name="output")
 
 
 @app.post("/vfi")
 async def vfi(req: VFIRequest):
-    # opath, fpath = await asyncio.wrap_future(executor.submit(_run, req))
-    opath, fpath =_run(req)
-    return {
-        "opath": f"http://10.252.25.251:8185/videos/{opath}",
-        "fpath": f"http://10.252.25.251:8185/videos/{fpath}",
-    }
+    req.uid = str(uuid.uuid4()).replace("-", "")
+    future = executor.submit(_run, req)
+
+    def send_notify(f):
+        opath, fpath = f.result()
+        data = {
+            "task_id": req.uid,
+            "opath": f"{_HTTP_PREFIX}/videos/{opath}",
+            "fpath": f"{_HTTP_PREFIX}/videos/{fpath}",
+        }
+        print(json.dumps(data))
+        if req.notify_url:
+            requests.post(req.notify_url, json=data)
+
+    future.add_done_callback(send_notify)
+
+    return {"task_id": req.uid}
 
 
 if __name__ == "__main__":
