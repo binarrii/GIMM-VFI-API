@@ -1,4 +1,3 @@
-import dotenv
 import json
 import multiprocessing
 import os
@@ -9,6 +8,7 @@ from dataclasses import dataclass
 from typing import Union
 
 import cv2
+import dotenv
 import numpy as np
 import requests
 import torch
