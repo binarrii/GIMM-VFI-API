@@ -77,7 +77,7 @@ curl -s http://10.252.25.251:8185/vfi --json '{"video": "/app/work/input/1029.mp
 
 ```
 
-- Asynchronous notification, the `notify_url` request parameter must be provided
+- Asynchronous notification, the `notify_url` request parameter must be provided, we use HTTP `POST` to send you the results
 
 ```json
 
