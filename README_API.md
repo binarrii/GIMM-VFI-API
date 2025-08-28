@@ -26,6 +26,15 @@ REST API for **GIMM-VFI**, with asynchronous queue, and asynchronous response
 | `task_id`     | string                 | Task ID represented as a string.                                                      |
 
 
+- Notification
+
+| Parameter     | Type                   | Description                                                                           |
+|---------------|------------------------|---------------------------------------------------------------------------------------|
+| `task_id`     | string                 | The unique identifier for the task, used to track the processing status.              |
+| `ovideo`      | string                 | The final output video file path or URL                                               |
+| `fvideo`      | string                 | The output optical flow video file path or URL                                        |
+
+
 ### Examples
 
 - List of image URLs as input
