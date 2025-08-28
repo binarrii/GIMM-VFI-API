@@ -1,6 +1,6 @@
 ## GIMM-VFI API
 
-REST API for **GIMM-VFI**
+REST API for **GIMM-VFI**, with asynchronous queue, and asynchronous response
 
 ### Parameters
 
