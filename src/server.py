@@ -29,8 +29,8 @@ _HTTP_PREFIX = os.getenv("GVFI_HTTP_PREFIX", default="").rstrip("/")
 _PATH_PREFIX = os.getenv("GVFI_PATH_PREFIX", default="").rstrip("/")
 
 _WORK_DIR = "work"
-_INPUT_DIR = os.getenv("GVFI_INPUT_DIR", f"{_WORK_DIR}/input").rstrip("/")
-_OUTPUT_DIR = os.getenv("GVFI_OUTPUT_DIR", f"{_WORK_DIR}/output").rstrip("/")
+_INPUT_DIR = f"{_WORK_DIR}/input"
+_OUTPUT_DIR = f"{_WORK_DIR}/output"
 
 os.makedirs(_INPUT_DIR, exist_ok=True)
 os.makedirs(_OUTPUT_DIR, exist_ok=True)
@@ -350,8 +350,16 @@ async def vfi(req: VFIRequest):
             ovideo = f"{_HTTP_PREFIX}/videos/{opath.lstrip(_OUTPUT_DIR)}"
             fvideo = f"{_HTTP_PREFIX}/videos/{fpath.lstrip(_OUTPUT_DIR)}"
         else:
-            ovideo = opath if opath.startswith("/") else f"{_PATH_PREFIX}{opath.lstrip(_WORK_DIR)}"
-            fvideo = fpath if fpath.startswith("/") else f"{_PATH_PREFIX}{fpath.lstrip(_WORK_DIR)}"
+            ovideo = (
+                opath
+                if opath.startswith("/")
+                else f"{_PATH_PREFIX}{opath.lstrip(_WORK_DIR)}"
+            )
+            fvideo = (
+                fpath
+                if fpath.startswith("/")
+                else f"{_PATH_PREFIX}{fpath.lstrip(_WORK_DIR)}"
+            )
 
         data = {"task_id": req.uid, "ovideo": ovideo, "fvideo": fvideo}
         print(json.dumps(data))
