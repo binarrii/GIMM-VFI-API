@@ -97,7 +97,10 @@ curl -s http://10.252.25.251:8185/vfi --json '{"video": "/app/work/input/1029.mp
 
 websocat ws://10.252.25.251:8185/ws/vfi - --text
 
+# send
 {"uid":"12372b5ae40547b0a134599cae7c54d9","images":"/app/demo/input_frames","output_type":"url"}
+
+# receive
 {"task_id":"12372b5ae40547b0a134599cae7c54d9","ovideo":"http://10.252.25.251:8185/videos/12372b5ae40547b0a134599cae7c54d9/o-12372b5ae40547b0a134599cae7c54d9.mp4","fvideo":"http://10.252.25.251:8185/videos/12372b5ae40547b0a134599cae7c54d9/f-12372b5ae40547b0a134599cae7c54d9.mp4"}
 
 ```
