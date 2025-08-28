@@ -15,7 +15,9 @@ REST API for **GIMM-VFI**, with asynchronous queue, and asynchronous response
 | `output_type` | string                 | "path"  | Determines if the output is a file path or a URL.                           |
 | `notify_url`  | string                 | null    | URL to send a notification to once processing is complete.                  |
 
-**Note**: *Choose either the `images` or `video` parameter*, not both
+**Note**:
+    *Choose either the `images` or `video` parameter, not both*
+    *If you choose to use file paths as input or output, they must be absolute paths*
 
 - Output
 
