@@ -8,7 +8,7 @@ REST API for **GIMM-VFI**, with asynchronous queue, and asynchronous response
 
 | Parameter     | Type                   | Default | Description                                                                 |
 |---------------|------------------------|---------|-----------------------------------------------------------------------------|
-| `images`      | Array[string] / string | null    | List of image URLs or a single image URL to process.                        |
+| `images`      | Array[string] / string | null    | List of image URLs or a single image directory to process.                  |
 | `video`       | string                 | null    | URL or path to the video file to process.                                   |
 | `n`           | int                    | 8       | Number of frames to interpolate between each pair of input frames.          |
 | `ds_factor`   | float                  | 1.0     | Downscale factor for processing images or video.                            |
@@ -50,7 +50,7 @@ curl -s http://10.252.25.251:8185/vfi \
 
 ```
 
-- Image directory as input, images must be sequentially named
+- Image directory as input, images must be sequentially named, requires shared storage, such as NAS
 
 ```bash
 
@@ -58,7 +58,7 @@ curl -s http://10.252.25.251:8185/vfi --json '{"images": "/app/demo/input_frames
 
 ```
 
-- Video file path as input, video URL as output, interpolation ratio 1:2, output frame rate, e.g. 30 -> 60 fps
+- Video file path as input, video URL as output, interpolation ratio `1:2`, output frame rate, e.g. `30 -> 60 fps`
 
 ```bash
 
