@@ -79,3 +79,13 @@ curl -s http://10.252.25.251:8185/vfi --json '{"video": "/app/work/input/1029.mp
 }
 
 ```
+
+### Check
+
+If you want to proactively know the result, you can obtain the result file by concatenating the URL. If the task is not yet completed, you will receive a `404`. The URL pattern is as follows:
+
+```json
+
+http://10.252.25.251:8185/videos/{task_id}/o-{task_id}.mp4
+
+```
