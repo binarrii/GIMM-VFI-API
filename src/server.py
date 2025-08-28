@@ -1,3 +1,4 @@
+import asyncio
 import json
 import multiprocessing
 import os
@@ -13,7 +14,7 @@ import numpy as np
 import requests
 import torch
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from tqdm import tqdm
@@ -185,7 +186,7 @@ def _get_video_frame_rate(video_path: str) -> float:
     return frame_rate
 
 
-def _run(req: VFIRequest):
+def _run(req: VFIRequest) -> tuple[str, str]:
     uid = req.uid
     print(f"Executing task {uid} on process {os.getpid()}")
 
@@ -348,31 +349,64 @@ async def vfi(req: VFIRequest):
     future = executor.submit(_run, req)
 
     def send_notify(f: Future[tuple[str, str]]):
-        opath, fpath = f.result()
-        if req.output_type == "url":
-            ovideo = f"{_HTTP_PREFIX}/videos/{opath.lstrip(_OUTPUT_DIR)}"
-            fvideo = f"{_HTTP_PREFIX}/videos/{fpath.lstrip(_OUTPUT_DIR)}"
-        else:
-            ovideo = (
-                opath
-                if opath.startswith("/")
-                else f"{_PATH_PREFIX}{opath.lstrip(_WORK_DIR)}"
-            )
-            fvideo = (
-                fpath
-                if fpath.startswith("/")
-                else f"{_PATH_PREFIX}{fpath.lstrip(_WORK_DIR)}"
-            )
-
-        data = {"task_id": req.uid, "ovideo": ovideo, "fvideo": fvideo}
+        data = _resolve_result(f, req)
         print(json.dumps(data))
-
         if req.notify_url:
             requests.post(req.notify_url, json=data)
 
     future.add_done_callback(send_notify)
 
     return {"task_id": req.uid}
+
+
+_ws_clients = {}
+
+
+@app.websocket("/ws/vfi")
+async def websocket_vfi(websocket: WebSocket):
+    await websocket.accept()
+    client_id = f"c-{str(uuid.uuid4()).replace('-', '')}"
+    _ws_clients[client_id] = websocket
+
+    loop = asyncio.get_running_loop()
+
+    def send_notify(f: Future[tuple[str, str]]):
+        data = _resolve_result(f, req)
+        print(json.dumps(data))
+        if client_id in _ws_clients:
+            websocket = _ws_clients[client_id]
+            loop.create_task(websocket.send_json(data))
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            req = VFIRequest(**data)
+            req.uid = str(uuid.uuid4()).replace("-", "")
+            future = executor.submit(_run, req)
+            future.add_done_callback(send_notify)
+
+    except WebSocketDisconnect:
+        del _ws_clients[client_id]
+
+
+def _resolve_result(f: Future[tuple[str, str]], req: VFIRequest):
+    opath, fpath = f.result()
+    if req.output_type == "url":
+        ovideo = f"{_HTTP_PREFIX}/videos/{opath.lstrip(_OUTPUT_DIR)}"
+        fvideo = f"{_HTTP_PREFIX}/videos/{fpath.lstrip(_OUTPUT_DIR)}"
+    else:
+        ovideo = (
+            opath
+            if opath.startswith("/")
+            else f"{_PATH_PREFIX}{opath.lstrip(_WORK_DIR)}"
+        )
+        fvideo = (
+            fpath
+            if fpath.startswith("/")
+            else f"{_PATH_PREFIX}{fpath.lstrip(_WORK_DIR)}"
+        )
+
+    return {"task_id": req.uid, "ovideo": ovideo, "fvideo": fvideo}
 
 
 if __name__ == "__main__":
