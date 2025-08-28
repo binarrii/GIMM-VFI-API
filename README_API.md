@@ -89,3 +89,5 @@ If you want to proactively know the result, you can obtain the result file by co
 http://10.252.25.251:8185/videos/{task_id}/o-{task_id}.mp4
 
 ```
+
+**Note**: It is not recommended to use this method directly in the program code, it is only for manual inspection or testing
