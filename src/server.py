@@ -377,16 +377,18 @@ async def websocket_vfi(websocket: WebSocket):
             websocket = _ws_clients[client_id]
             loop.create_task(websocket.send_json(data))
 
-    try:
-        while True:
+    while True:
+        try:
             data = await websocket.receive_json()
             req = VFIRequest(**data)
             req.uid = str(uuid.uuid4()).replace("-", "")
             future = executor.submit(_run, req)
             future.add_done_callback(send_notify)
-
-    except WebSocketDisconnect:
-        del _ws_clients[client_id]
+        except json.JSONDecodeError:
+            pass
+        except WebSocketDisconnect:
+            del _ws_clients[client_id]
+            break
 
 
 def _resolve_result(f: Future[tuple[str, str]], req: VFIRequest):
