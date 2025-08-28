@@ -16,8 +16,8 @@ REST API for **GIMM-VFI**, with asynchronous queue, and asynchronous response
 | `notify_url`  | string                 | null    | URL to send a notification to once processing is complete.                  |
 
 **Note**:
-    *Choose either the `images` or `video` parameter, not both*
-    *If you choose to use file paths as input or output, they must be absolute paths*
+*Choose either the `images` or `video` parameter, not both.*
+*If you choose to use file paths as input or output, they must be absolute paths.*
 
 - Output
 
