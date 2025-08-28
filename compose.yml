@@ -13,3 +13,8 @@ services:
     environment:
       GVFI_PATH_PREFIX: /data/gimm-vfi-api
       GVFI_HTTP_PREFIX: http://10.252.25.251:8185
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -16,6 +16,7 @@ FROM nvidia/cuda:11.6.2-runtime-ubuntu20.04
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/bin/
 
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 

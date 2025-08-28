@@ -55,6 +55,7 @@ class VFIRequest(BaseModel):
     images: Union[list[str], str] = None
     video: str = None
     n: int = 8
+    ds_factor: float = 1.0
     output_type: str = "path"
     notify_url: str = None
 
@@ -207,7 +208,9 @@ def _run(req: VFIRequest):
     else:
         raise ValueError("Images or video must be provided")
 
-    args = VFIArgs(source_path=src_path, output_path=dst_path, N=req.n)
+    args = VFIArgs(
+        source_path=src_path, output_path=dst_path, N=req.n, ds_factor=req.ds_factor
+    )
     set_seed(args.seed)
     device = torch.device("cuda")
 
