@@ -381,7 +381,8 @@ async def websocket_vfi(websocket: WebSocket):
         try:
             data = await websocket.receive_json()
             req = VFIRequest(**data)
-            req.uid = str(uuid.uuid4()).replace("-", "")
+            if not req.uid:
+                req.uid = str(uuid.uuid4()).replace("-", "")
             future = executor.submit(_run, req)
             future.add_done_callback(send_notify)
         except json.JSONDecodeError:

@@ -14,10 +14,12 @@ REST API for **GIMM-VFI**, with asynchronous queue, and asynchronous response
 | `ds_factor`   | float                  | 1.0     | Downscale factor for processing images or video.                            |
 | `output_type` | string                 | "path"  | Determines if the output is a file path or a URL.                           |
 | `notify_url`  | string                 | null    | URL to send a notification to once processing is complete.                  |
+| `uid`         | string                 | null    | A user-specified ID for task tracking, only used for the websocket endpoint.|
 
 **Note**:
 *Choose either the `images` or `video` parameter, not both.*
 *If you choose to use file paths as input or output, they must be absolute paths.*
+
 
 - Output
 
@@ -89,13 +91,13 @@ curl -s http://10.252.25.251:8185/vfi --json '{"video": "/app/work/input/1029.mp
 
 ```
 
-- We also support WebSocket endpoints, you can easily experience it using the `websocat` command-line tool
+- We also support WebSocket endpoints, you can easily experience it using the `websocat` command-line tool, and you can specify a `uid` for task tracking
 
 ```bash
 
 websocat ws://10.252.25.251:8185/ws/vfi - --text
 
-{"images":"/app/demo/input_frames","output_type":"url"}
+{"uid":"12372b5ae40547b0a134599cae7c54d9","images":"/app/demo/input_frames","output_type":"url"}
 {"task_id":"12372b5ae40547b0a134599cae7c54d9","ovideo":"http://10.252.25.251:8185/videos/12372b5ae40547b0a134599cae7c54d9/o-12372b5ae40547b0a134599cae7c54d9.mp4","fvideo":"http://10.252.25.251:8185/videos/12372b5ae40547b0a134599cae7c54d9/f-12372b5ae40547b0a134599cae7c54d9.mp4"}
 
 ```
